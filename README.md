@@ -132,7 +132,7 @@ graph TD
 - [7.3 Checker 봇 : Qwen / Gemini](docs/module_specs/7.0_Agents/7.3_checker_bot.md)
 - [7.4 URL 매핑 연결 봇](docs/module_specs/7.0_Agents/7.4_url_linker_bot.md)
 
-### TR 파이프라인 브릿지 스크립트
+### 8.0 파이프라인 브릿지 스크립트
 - [TR_1.1_to_1.4_toc_extract](docs/module_specs/8.0_bridges_transitions/TR_1.1_to_1.4_toc_extract.md)
 - [TR_1.2_to_2.1_mcq_slice](docs/module_specs/8.0_bridges_transitions/TR_1.2_to_2.1_mcq_slice.md)
 - [TR_1.3_to_2.1_essay_split](docs/module_specs/8.0_bridges_transitions/TR_1.3_to_2.1_essay_split.md)
