@@ -141,7 +141,7 @@ class TOCHierarchyEditor(tk.Tk):
     def _save_opml(self, filepath):
         opml = Element("opml", version="2.0")
         head = SubElement(opml, "head")
-        SubElement(head, "title").text = os.basename(filepath)
+        SubElement(head, "title").text = os.path.basename(filepath)
         body = SubElement(opml, "body")
 
         def append_to_opml(parent_elem, nodes):
