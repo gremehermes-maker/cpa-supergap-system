@@ -1,0 +1,19 @@
+# CPA Super-gap System Configuration
+# 이 파일은 Windows와 Mac에서 경로 설정을 다르게 할 수 있도록 도와줍니다.
+
+# 사용자의 운영체제를 감지하여 알맞은 경로를 사용하게 됩니다.
+# 팀원들은 이 파일을 자신에게 맞게 수정하여 사용합니다. (.gitignore에 등록 권장)
+
+windows:
+  # Windows 환경에서의 작업 경로 및 MarginNote 데이터 내보내기 경로 등
+  workspace_dir: "C:\\Users\\Public\\Documents\\CPA_Supergap_System"
+  marginnote_db_export_path: "C:\\Users\\Public\\Documents\\MarginNotes.sqlite"
+  pdf_input_dir: "C:\\Users\\Public\\Documents\\CPA_PDFs"
+  output_dir: "C:\\Users\\Public\\Documents\\CPA_Outputs"
+
+mac:
+  # Mac 환경에서의 MarginNote 원본 DB 및 작업 경로
+  workspace_dir: "/Users/na/.gemini/antigravity/scratch/CPA_Supergap_System"
+  marginnote_db_path: "/Users/na/Library/Containers/QReader.MarginStudy.easy/Data/Library/Private Documents/MN4NotebookDatabase/0/MarginNotes.sqlite"
+  pdf_input_dir: "/Users/na/Desktop/CPA_PDFs"
+  output_dir: "/Users/na/Desktop/CPA_Outputs"

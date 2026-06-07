@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPA 초격차 시스템 구조도</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({ 
+            startOnLoad: true, 
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: { useMaxWidth: false, htmlLabels: true }
+        });
+    </script>
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 40px; 
+            background-color: #ffffff; 
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .mermaid-container {
+            width: 100%;
+            overflow-x: auto;
+            border: 1px solid #eaeaea;
+            border-radius: 8px;
+            padding: 20px;
+            background-color: #fcfcfc;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        .mermaid { 
+            display: flex;
+            justify-content: center;
+        }
+        p.desc {
+            color: #666;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CPA 초격차 시스템 아키텍처</h1>
+    <div class="mermaid-container">
+        <div class="mermaid">
+        graph TD
+            %% [1.0] 교재 및 자료 입력단 (Input Sources)
+            subgraph 1.0_Inputs [1.0 학습 소스 입력단]
+                1.1(1.1 기본서 PDF) --> |TOC 추출 및 매핑| 1.4(1.4 TOC-URL 매핑 DB)
+                1.2(1.2 1차 문제집) --> |문항 단위 슬라이싱| 2.1
+                1.3(1.3 2차 연습서) --> |공통자료/물음 분할| 2.1
+            end
+
+            %% [2.0] MarginNote 4 (창고 및 메인 엔진)
+            subgraph 2.0_MarginNote [2.0 MarginNote 4 : 데이터 창고 & 메타인지 기록]
+                2.1(2.1 마인드맵 & 노드)
+                2.2(2.2 ZCOLOR 색상 트리거)
+                2.3(2.3 ZGROUPNOTEID 위계)
+                2.4(2.4 marginnote4app:// 고유 URL)
+                
+                1.4 --> |뼈대 역삽입| 2.1
+                2.1 --- 2.2
+                2.1 --- 2.3
+                2.1 --- 2.4
+            end
+
+            %% [3.0] 파이썬 파이프라인 (Data Pipeline)
+            subgraph 3.0_Pipeline [3.0 Python 백그라운드 파이프라인]
+                3.1(3.1 스키마 무결성 검사)
+                3.2(3.2 이미지 최적화 / Webp)
+                3.3(3.3 데이터 분배 엔진)
+                
+                2.2 --> 3.1
+                2.3 --> 3.1
+                3.1 --> 3.2
+                3.2 --> 3.3
+            end
+
+            %% [4.0] 지식 관리 및 약점 분석 (Knowledge Base)
+            subgraph 4.0_Knowledge [4.0 마크다운 지식베이스 & 관제탑]
+                4.1(4.1 Logseq: 2차 문제 아웃라이너)
+                4.2(4.2 Obsidian: LLM Wiki 및 통계)
+                
+                3.3 --> 4.1
+                3.3 --> 4.2
+            end
+
+            %% [5.0] Anki (장기 기억 저장소)
+            subgraph 5.0_Anki [5.0 Anki : 장기 기억 스케줄러]
+                5.1(5.1 FSRS 스케줄러 알고리즘)
+                5.2(5.2 ZNOTEID 중복 증식 방지)
+                5.3(5.3 Daily Mini Deck 추출)
+                
+                3.3 --> 5.1
+                5.1 --- 5.2
+            end
+
+            %% [6.0] 스마트폰/모바일 환경 (Mobile)
+            subgraph 6.0_Mobile [6.0 모바일 학습 환경]
+                6.1(6.1 모바일 Anki 뷰어)
+                6.2(6.2 Slack/Telegram Inbox)
+                
+                5.3 --> |Push| 6.1
+                6.1 -.-> |오류 발견시 텍스트 전송| 6.2
+            end
+
+            %% [7.0] AI 에이전트 (Hermes Agents)
+            subgraph 7.0_Agents [7.0 Hermes 멀티 에이전트 시스템]
+                7.1(7.1 스케줄러 & Inbox 봇)
+                7.2(7.2 Tutor 봇 : Claude 3.5)
+                7.3(7.3 Checker 봇 : Qwen / Gemini 1.5)
+                7.4(7.4 URL 매핑 연결 봇)
+                
+                6.2 --> 7.1
+                4.2 -.-> |지식 검색| 7.2
+                7.2 <--> |OpenCode Go 교차 검증| 7.3
+                7.4 -.-> |TOC_Mapping.json 참조| 1.4
+            end
+        </div>
+    </div>
+    <p class="desc">마우스를 이용해 스크롤하거나, 이미지를 우클릭하여 '새 탭에서 이미지 열기'를 누르시면 원본 크기로 보실 수 있습니다.</p>
+</body>
+</html>

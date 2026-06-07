@@ -1,0 +1,3 @@
+# Requirements for CPA Super-gap System
+PyMuPDF==1.23.8  # PDF 파싱 (TOC 추출용)
+pyyaml==6.0.1    # config.yaml 로드용
