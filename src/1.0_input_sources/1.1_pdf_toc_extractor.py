@@ -59,6 +59,11 @@ class TOCHierarchyEditor(tk.Tk):
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
 
+        # 드래그 앤 드롭 이벤트 바인딩
+        self.tree.bind("<ButtonPress-1>", self.on_drag_start)
+        self.tree.bind("<ButtonRelease-1>", self.on_drag_release)
+        self._drag_data = {"item": None}
+
     def load_json(self):
         filepath = filedialog.askopenfilename(
             title="AI가 추출한 목차 JSON 파일 선택",
@@ -219,6 +224,43 @@ class TOCHierarchyEditor(tk.Tk):
             # parent의 바로 다음 위치에 삽입
             idx = self.tree.index(parent) + 1
             self.tree.move(item, grandparent, idx)
+
+    # --- 마우스 드래그 앤 드롭 로직 ---
+    def on_drag_start(self, event):
+        item = self.tree.identify_row(event.y)
+        if item:
+            self._drag_data["item"] = item
+
+    def on_drag_release(self, event):
+        if not self._drag_data["item"]:
+            return
+            
+        dragged_item = self._drag_data["item"]
+        target_item = self.tree.identify_row(event.y)
+        
+        self._drag_data["item"] = None
+        
+        if not target_item or target_item == dragged_item:
+            return
+
+        # 방어 로직: 부모를 자기 자신의 자식으로 넣으려는 경우 방지 (무한 루프 방지)
+        def is_descendant(node, possible_descendant):
+            children = self.tree.get_children(node)
+            if possible_descendant in children:
+                return True
+            for child in children:
+                if is_descendant(child, possible_descendant):
+                    return True
+            return False
+
+        if is_descendant(dragged_item, target_item):
+            messagebox.showwarning("경고", "상위 노드를 하위 노드 안으로 이동할 수 없습니다.")
+            return
+
+        # 타겟 노드의 바로 '아래(다음 형제)' 위치로 이동시킴
+        parent = self.tree.parent(target_item)
+        idx = self.tree.index(target_item)
+        self.tree.move(dragged_item, parent, idx + 1)
 
 if __name__ == "__main__":
     app = TOCHierarchyEditor()
