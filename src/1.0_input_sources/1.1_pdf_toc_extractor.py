@@ -39,7 +39,7 @@ class TOCHierarchyEditor(tk.Tk):
 
         # 트리뷰
         tree_frame = ttk.Frame(self)
-        tree_frame.pack(side=tk.BOTH, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         self.tree = ttk.Treeview(tree_frame, columns=("Page",), selectmode="browse")
         self.tree.heading("#0", text="목차 제목 (Title)", anchor=tk.W)
