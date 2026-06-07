@@ -1,133 +1,281 @@
-import fitz  # PyMuPDF 라이브러리: PDF 파일을 읽고 다루기 위한 도구입니다.
+import fitz  # PyMuPDF
+import re
 import json
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import os
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
 
-def extract_toc_from_pdf(pdf_path):
-    """
-    PDF 파일에서 목차(TOC) 정보를 추출하는 함수입니다.
-    fitz.open()을 통해 문서를 열고, get_toc() 함수로 [계층레벨, 제목, 페이지번호] 리스트를 가져옵니다.
-    """
-    try:
-        # PDF 문서를 엽니다.
-        doc = fitz.open(pdf_path)
-        # 문서의 목차 정보를 추출합니다.
-        # toc 형식: [[1, 'Chapter 1', 5], [2, 'Section 1', 6], ...]
-        toc = doc.get_toc()
+# --- 인간 친화적 드롭다운 옵션과 정규식 매핑 ---
+PATTERN_MAP = {
+    "1. 2. 3. (아라비아 숫자)": r"^\d+\.\s+",
+    "(1) (2) (3) (괄호 숫자)": r"^\(\d+\)\s*",
+    "① ② ③ (원문자 숫자)": r"^[①-⑮]\s*",
+    "가. 나. 다. (한글)": r"^[가-하]\.\s+",
+    "I. II. III. (로마자 대문자)": r"^[IVX]+\.\s+",
+    "제1장, 제1편 (장/편 단위)": r"^제\s*\d+\s*[장편절]\s*"
+}
+
+class TOCExtractorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("CPA Supergap - 1.1 TOC Extractor (V9)")
+        self.root.geometry("600x400")
+        
+        self.pdf_path = ""
+        
+        # 1. 파일 선택 UI
+        frame_file = ttk.LabelFrame(self.root, text="1. 교재 PDF 선택", padding=10)
+        frame_file.pack(fill="x", padx=10, pady=5)
+        
+        self.lbl_file = ttk.Label(frame_file, text="선택된 파일 없음")
+        self.lbl_file.pack(side="left", fill="x", expand=True)
+        
+        btn_file = ttk.Button(frame_file, text="PDF 찾아보기", command=self.select_file)
+        btn_file.pack(side="right")
+        
+        # 2. 마우스 클릭형 목차 규칙 설정 UI
+        frame_rules = ttk.LabelFrame(self.root, text="2. 목차 위계 드롭다운 설정 (Point-and-Click)", padding=10)
+        frame_rules.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        self.combos = []
+        self.entries = []
+        
+        options = [
+            "[선택 안 함]",
+            "[텍스트 직접 입력 (이미지 폰트 추적용)]",
+            "제1장, 제1편 (장/편 단위)",
+            "1. 2. 3. (아라비아 숫자)",
+            "(1) (2) (3) (괄호 숫자)",
+            "① ② ③ (원문자 숫자)",
+            "가. 나. 다. (한글)",
+            "I. II. III. (로마자 대문자)"
+        ]
+        
+        # Level 1 부터 5까지 드롭다운 배치
+        for i in range(5):
+            row_frame = ttk.Frame(frame_rules)
+            row_frame.pack(fill="x", pady=2)
+            
+            lbl = ttk.Label(row_frame, text=f"Level {i+1}:", width=8)
+            lbl.pack(side="left")
+            
+            # 마우스로 선택하는 콤보박스(드롭다운)
+            combo = ttk.Combobox(row_frame, values=options, state="readonly", width=35)
+            combo.set("[선택 안 함]")
+            combo.pack(side="left", padx=5)
+            combo.bind("<<ComboboxSelected>>", self.on_combo_change)
+            self.combos.append(combo)
+            
+            # 텍스트 직접 입력을 골랐을 때만 켜지는 타이핑 칸
+            entry = ttk.Entry(row_frame, state="disabled", width=20)
+            entry.pack(side="left", padx=5)
+            self.entries.append(entry)
+
+        # 3. 추출 실행 버튼
+        frame_run = ttk.Frame(self.root, padding=10)
+        frame_run.pack(fill="x", padx=10, pady=5)
+        
+        btn_run = ttk.Button(frame_run, text="MECE 목차 자동 추출 시작!", command=self.run_extraction)
+        btn_run.pack(fill="x", ipady=5)
+        
+    def select_file(self):
+        """파일 탐색기를 열어 PDF 파일을 선택합니다."""
+        path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
+        if path:
+            self.pdf_path = path
+            self.lbl_file.config(text=path)
+            
+    def on_combo_change(self, event):
+        """드롭다운 선택 값에 따라 텍스트 입력창을 켜고 끕니다."""
+        for i in range(5):
+            val = self.combos[i].get()
+            if val == "[텍스트 직접 입력 (이미지 폰트 추적용)]":
+                self.entries[i].config(state="normal")
+            else:
+                self.entries[i].delete(0, tk.END)
+                self.entries[i].config(state="disabled")
+
+    def run_extraction(self):
+        """추출 시작 버튼을 눌렀을 때의 메인 로직입니다."""
+        if not self.pdf_path:
+            messagebox.showwarning("경고", "PDF 파일을 선택해주세요!")
+            return
+            
+        rules = []
+        for i in range(5):
+            val = self.combos[i].get()
+            text_val = self.entries[i].get()
+            
+            if val == "[선택 안 함]":
+                continue
+            elif val == "[텍스트 직접 입력 (이미지 폰트 추적용)]":
+                if not text_val:
+                    messagebox.showwarning("경고", f"Level {i+1}의 추적용 텍스트를 입력해주세요.")
+                    return
+                # 추적용 규칙 등록
+                rules.append({"type": "font", "text": text_val, "level": i+1})
+            else:
+                # 드롭다운 선택값을 실제 정규식(Regex)으로 자동 치환하여 등록
+                rules.append({"type": "regex", "pattern": PATTERN_MAP[val], "level": i+1})
+                
+        if not rules:
+            messagebox.showwarning("경고", "최소 1개 이상의 규칙을 설정해주세요.")
+            return
+            
+        try:
+            self.extract_toc(rules)
+            messagebox.showinfo("성공", "목차 추출이 완료되었습니다!\n선택하신 PDF와 같은 폴더에 JSON/OPML 파일이 생성되었습니다.")
+        except Exception as e:
+            messagebox.showerror("오류", f"추출 중 오류 발생:\n{e}")
+
+    def detect_font_sizes(self, doc, rules):
+        """
+        사용자가 '텍스트 직접 입력'으로 넘긴 글자의 실제 폰트 크기를 
+        PDF에서 스캔하여 알아내는 마법의 함수입니다. (깨진 글자도 찰떡같이 찾습니다!)
+        """
+        import difflib
+        font_rules = [r for r in rules if r["type"] == "font"]
+        if not font_rules: return
+        
+        end_page = min(20, len(doc)) # 초반 20페이지만 스캔해서 크기를 찾아냅니다.
+        for r in font_rules:
+            target_text = r["text"].replace(" ", "")
+            found_size = 0
+            
+            for page_num in range(end_page):
+                page = doc.load_page(page_num)
+                blocks = page.get_text("dict")["blocks"]
+                for block in blocks:
+                    if "lines" not in block: continue
+                    for line in block["lines"]:
+                        line_text = ""
+                        max_size = 0
+                        for span in line["spans"]:
+                            txt = span["text"].strip()
+                            if txt:
+                                line_text += txt
+                                max_size = max(max_size, span["size"])
+                        
+                        clean_line = line_text.replace(" ", "")
+                        if not clean_line: continue
+                        
+                        # Fuzzy Matching (유사도 검사): 
+                        # PDF 내장 텍스트가 "n フ I 업과시장" 처럼 깨져 있어도 "기업과시장"을 60% 이상 매칭하면 정답으로 간주
+                        ratio = difflib.SequenceMatcher(None, target_text, clean_line).ratio()
+                        if target_text in clean_line or ratio >= 0.55:
+                            # 폰트 사이즈 업데이트 (제일 큰 폰트 기준)
+                            found_size = max(found_size, max_size)
+                            
+            if found_size > 0:
+                # 찾은 사이즈보다 아주 살짝 작은 값(오차 감안)을 커트라인으로 세팅
+                r["size_threshold"] = found_size - 0.5
+            else:
+                raise Exception(f"'{r['text']}' 텍스트를 초반 20쪽에서 찾을 수 없습니다. 오타를 확인하거나 다른 확실한 제목을 입력해보세요.")
+
+    def extract_toc(self, rules):
+        """
+        확정된 규칙(rules)을 바탕으로 PDF 전체를 훑어 목차를 추출하고 위계를 잡습니다.
+        """
+        doc = fitz.open(self.pdf_path)
+        self.detect_font_sizes(doc, rules) # 폰트 크기 자동 역추적 가동!
+        
+        extracted = []
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            blocks = page.get_text("dict")["blocks"]
+            
+            for block in blocks:
+                if "lines" not in block: continue
+                for line in block["lines"]:
+                    line_text = ""
+                    max_size = 0
+                    is_bold = False
+                    
+                    for span in line["spans"]:
+                        txt = span["text"].strip()
+                        if txt:
+                            line_text += txt + " "
+                            max_size = max(max_size, span["size"])
+                            if "Bold" in span["font"] or "Bold" in span["font"].upper():
+                                is_bold = True
+                                
+                    line_text = line_text.strip()
+                    if not line_text: continue
+                    
+                    # 수립된 규칙(폰트 크기 or 정규식)들과 하나하나 매칭해봅니다.
+                    matched_level = None
+                    for r in rules:
+                        if r["type"] == "font":
+                            if max_size >= r["size_threshold"]:
+                                matched_level = r["level"]
+                                break
+                        elif r["type"] == "regex":
+                            # 정규식 패턴은 기본적으로 본문보다 폰트가 크거나 굵어야(Bold) 인정
+                            if max_size > 8.3 or is_bold:
+                                if re.match(r["pattern"], line_text):
+                                    matched_level = r["level"]
+                                    break
+                                    
+                    if matched_level:
+                        extracted.append({
+                            "level": matched_level,
+                            "title": line_text,
+                            "page": page_num + 1
+                        })
+
+        # --- 트리(위계) 구조 조립 ---
+        hierarchy = []
+        stack = []
+        
+        for item in extracted:
+            node = {"title": item["title"], "page": item["page"], "children": []}
+            level = item["level"]
+            
+            while stack and stack[-1]["level"] >= level:
+                stack.pop()
+                
+            if not stack:
+                hierarchy.append(node)
+            else:
+                stack[-1]["node"]["children"].append(node)
+                
+            stack.append({"level": level, "node": node})
+            
+        # JSON 및 OPML 저장 처리
+        out_dir = os.path.dirname(self.pdf_path)
+        base_name = os.path.splitext(os.path.basename(self.pdf_path))[0]
+        
+        with open(os.path.join(out_dir, f"{base_name}_toc.json"), 'w', encoding='utf-8') as f:
+            json.dump(hierarchy, f, ensure_ascii=False, indent=4)
+            
+        self.export_to_opml(hierarchy, os.path.join(out_dir, f"{base_name}_toc.opml"))
         doc.close()
-        return toc
-    except Exception as e:
-        print(f"PDF 파싱 중 에러 발생: {e}")
-        return []
 
-def build_hierarchy(toc):
-    """
-    평면적인(flat) 목차 리스트를 트리(Tree) 구조의 딕셔너리로 변환하는 함수입니다.
-    하위 목차(자식)를 상위 목차(부모)의 'children' 리스트 안에 넣습니다.
-    """
-    hierarchy = []
-    # 각 레벨별로 가장 최근에 추가된 노드(항목)를 추적하기 위한 스택입니다.
-    stack = []
-    
-    for item in toc:
-        level, title, page = item
-        # 새 노드를 생성합니다.
-        node = {
-            "title": title,
-            "page": page,
-            "children": []
-        }
+    def build_opml_elements(self, parent_element, nodes):
+        """XML 생성용 헬퍼 함수"""
+        for node in nodes:
+            outline = ET.SubElement(parent_element, 'outline', text=node["title"])
+            if node["children"]:
+                self.build_opml_elements(outline, node["children"])
+
+    def export_to_opml(self, hierarchy, output_path):
+        """마진노트, Logseq 연동을 위한 OPML 파일 생성"""
+        opml = ET.Element('opml', version='2.0')
+        head = ET.SubElement(opml, 'head')
+        ET.SubElement(head, 'title').text = "CPA Supergap TOC"
+        body = ET.SubElement(opml, 'body')
         
-        # 현재 레벨이 스택의 길이보다 작거나 같으면, 
-        # 즉 이전 항목보다 상위 레벨이거나 같은 레벨이면
-        # 스택에서 현재 레벨 이상의 항목들을 빼냅니다(pop).
-        while len(stack) >= level:
-            stack.pop()
-            
-        if len(stack) == 0:
-            # 스택이 비어있으면 최상위(Root) 레벨이므로 결과 리스트에 직접 추가합니다.
-            hierarchy.append(node)
-        else:
-            # 스택이 비어있지 않으면, 스택의 맨 마지막 항목(부모 노드)의 children에 현재 노드를 추가합니다.
-            stack[-1]["children"].append(node)
-            
-        # 다음 하위 항목을 위해 현재 노드를 스택에 쌓습니다.
-        stack.append(node)
+        self.build_opml_elements(body, hierarchy)
         
-    return hierarchy
-
-def export_to_json(hierarchy, output_path):
-    """
-    생성된 트리 구조의 목차를 JSON 파일로 저장하는 함수입니다.
-    """
-    with open(output_path, 'w', encoding='utf-8') as f:
-        # ensure_ascii=False 를 통해 한글이 깨지지 않고 저장되도록 합니다.
-        json.dump(hierarchy, f, ensure_ascii=False, indent=4)
-    print(f"JSON 파일 생성 완료: {output_path}")
-
-def build_opml_elements(parent_element, nodes):
-    """
-    XML 구조를 재귀적으로 만들어가는 헬퍼 함수입니다.
-    Logseq이나 MarginNote에서 인식할 수 있는 <outline> 태그를 생성합니다.
-    """
-    for node in nodes:
-        # outline 태그를 만들고 text 속성에 목차 제목을 넣습니다.
-        outline = ET.SubElement(parent_element, 'outline', text=node["title"])
-        # 자식 노드(하위 목차)가 있다면 자기 자신을 다시 호출하여 구조를 완성합니다.
-        if node["children"]:
-            build_opml_elements(outline, node["children"])
-
-def export_to_opml(hierarchy, output_path):
-    """
-    생성된 트리 구조의 목차를 OPML 파일로 저장하는 함수입니다.
-    OPML은 아웃라이너(Logseq 등) 프로그램에서 주로 쓰이는 XML 기반 규격입니다.
-    """
-    # OPML 최상위 구조를 잡습니다.
-    opml = ET.Element('opml', version='2.0')
-    head = ET.SubElement(opml, 'head')
-    ET.SubElement(head, 'title').text = "CPA Supergap TOC"
-    
-    body = ET.SubElement(opml, 'body')
-    
-    # body 아래에 실제 목차 노드들을 붙여넣습니다.
-    build_opml_elements(body, hierarchy)
-    
-    # 예쁘게 줄바꿈(Indentation) 처리를 하기 위해 minidom을 사용합니다.
-    xml_str = ET.tostring(opml, encoding='utf-8')
-    parsed_xml = minidom.parseString(xml_str)
-    pretty_xml = parsed_xml.toprettyxml(indent="  ")
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(pretty_xml)
-    print(f"OPML 파일 생성 완료: {output_path}")
+        xml_str = ET.tostring(opml, encoding='utf-8')
+        pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(pretty_xml)
 
 if __name__ == "__main__":
-    # 테스트를 위한 샘플 PDF 파일 경로입니다. (추후 실제 파일 경로로 교체됩니다.)
-    # os.path를 이용하여 스크립트 실행 위치에 관계없이 절대경로를 찾아냅니다.
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(current_dir, "../.."))
-    sample_pdf = os.path.join(project_root, "tests", "samples", "split_part_1.pdf")
-    
-    # 추출한 결과물을 저장할 경로입니다.
-    output_json = os.path.join(project_root, "tests", "samples", "split_part_1_toc.json")
-    output_opml = os.path.join(project_root, "tests", "samples", "split_part_1_toc.opml")
-    
-    print(f"PDF 분석을 시작합니다: {sample_pdf}")
-    
-    # 1. 목차 추출
-    raw_toc = extract_toc_from_pdf(sample_pdf)
-    
-    if raw_toc:
-        print(f"총 {len(raw_toc)}개의 목차 항목이 발견되었습니다.")
-        
-        # 2. 계층형 트리(Hierarchy)로 변환
-        hierarchy_data = build_hierarchy(raw_toc)
-        
-        # 3. JSON 및 OPML로 저장 (마진노트, Logseq 연동용)
-        export_to_json(hierarchy_data, output_json)
-        export_to_opml(hierarchy_data, output_opml)
-        
-        print("모든 작업이 성공적으로 완료되었습니다!")
-    else:
-        print("목차가 없거나 추출에 실패했습니다. (PDF에 내부 북마크가 없는 경우일 수 있습니다.)")
+    root = tk.Tk()
+    app = TOCExtractorApp(root)
+    root.mainloop()
