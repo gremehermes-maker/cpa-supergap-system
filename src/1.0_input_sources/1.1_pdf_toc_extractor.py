@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
-
+import fitz  # PyMuPDF
 class TOCHierarchyEditor(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -24,7 +24,7 @@ class TOCHierarchyEditor(tk.Tk):
         toolbar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
         ttk.Button(toolbar, text="📂 JSON 초안 불러오기", command=self.load_json).pack(side=tk.LEFT, padx=2)
-        ttk.Button(toolbar, text="💾 최종 저장 (JSON & OPML)", command=self.save_all).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="💾 최종 저장 및 PDF 북마크 주입", command=self.save_all).pack(side=tk.LEFT, padx=2)
         
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
         
@@ -122,44 +122,61 @@ class TOCHierarchyEditor(tk.Tk):
             messagebox.showwarning("경고", "먼저 JSON 파일을 불러오세요.")
             return
 
+        # 1. 덮어씌울 원본 PDF 파일 선택
+        pdf_path = filedialog.askopenfilename(
+            title="목차(북마크)를 주입할 원본 PDF 파일 선택",
+            filetypes=[("PDF Files", "*.pdf")]
+        )
+        if not pdf_path:
+            return
+
         # 트리뷰의 데이터를 딕셔너리로 변환
         self.toc_data = self._get_tree_as_dict()
 
         try:
-            # 1. JSON 덮어쓰기
+            # 2. JSON 덮어쓰기 (백업 및 DB 연동용)
             with open(self.current_json_path, 'w', encoding='utf-8') as f:
                 json.dump(self.toc_data, f, ensure_ascii=False, indent=4)
             
-            # 2. OPML 저장
-            opml_path = self.current_json_path.replace(".json", ".opml")
-            self._save_opml(opml_path)
+            # 3. PDF에 강제 주입 (Injection)
+            self._inject_pdf_bookmarks(pdf_path)
             
-            messagebox.showinfo("성공", f"완벽하게 튜닝된 목차가 저장되었습니다!\n이제 마진노트로 Import 하세요.\n\nJSON: {self.current_json_path}\nOPML: {opml_path}")
         except Exception as e:
             messagebox.showerror("에러", f"저장 중 오류가 발생했습니다:\n{e}")
 
-    def _save_opml(self, filepath):
-        opml = Element("opml", version="2.0")
-        head = SubElement(opml, "head")
-        SubElement(head, "title").text = os.path.basename(filepath)
-        body = SubElement(opml, "body")
-
-        def append_to_opml(parent_elem, nodes):
-            for node in nodes:
-                title = node.get("title", "")
-                outline = SubElement(parent_elem, "outline", text=title)
-                children = node.get("children", [])
-                if children:
-                    append_to_opml(outline, children)
-
-        append_to_opml(body, self.toc_data)
+    def _inject_pdf_bookmarks(self, pdf_path):
+        # Treeview 데이터를 PyMuPDF용 평면 리스트로 변환: [level, title, page]
+        toc_list = []
         
-        xml_str = tostring(opml, encoding="utf-8")
-        parsed_xml = minidom.parseString(xml_str)
-        pretty_xml = parsed_xml.toprettyxml(indent="  ")
+        def traverse(item_id, level):
+            children = self.tree.get_children(item_id)
+            for child in children:
+                title = self.tree.item(child, "text")
+                page = self.tree.item(child, "values")[0]
+                try:
+                    page_num = int(page)
+                except ValueError:
+                    page_num = 1
+                
+                toc_list.append([level, title, page_num])
+                traverse(child, level + 1)
+                
+        traverse("", 1)
+
+        # PyMuPDF로 원본 PDF 열기
+        doc = fitz.open(pdf_path)
         
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(pretty_xml)
+        # 새로운 북마크 삽입
+        doc.set_toc(toc_list)
+        
+        # 새 파일명으로 저장 (_목차주입본.pdf)
+        base_name, ext = os.path.splitext(pdf_path)
+        output_pdf_path = f"{base_name}_목차주입본{ext}"
+        
+        doc.save(output_pdf_path)
+        doc.close()
+        
+        messagebox.showinfo("대성공!", f"완벽하게 튜닝된 목차가 원본 PDF에 강제 주입되었습니다!\n이제 마진노트로 Import 하세요.\n\n주입된 파일: {output_pdf_path}")
 
     def add_node(self):
         selected = self.tree.selection()
