@@ -203,16 +203,18 @@ def run(pkg_path: str = None, vault_path: str = None, overwrite: bool = True) ->
         print(f"  ❌ 언패킹 실패: {e}")
         return {"error": str(e)}
 
-    # ── 4단계: SQLite 파싱 + 이미지 추출 ──────────
+    # ── 4단계: SQLite 파싱 + 이미지/TOC/PDF 추출 ──
     print("\n[4단계] MarginNote 데이터 파싱 중...")
     try:
         nodes = mn_parser.parse_all_nodes(db_path)
         topics = mn_parser.get_topic_info(db_path)
         media_map = mn_parser.extract_media(db_path)
-        print(f"  ✅ 파싱 완료: {len(nodes)}개 노드, {len(topics)}개 스터디셋, {len(media_map)}개 이미지")
+        toc_ids = mn_parser.get_toc_node_ids(db_path)
+        pdf_files = mn_parser.get_pdf_files(tmp_dir)
+        print(f"  ✅ 파싱 완료: {len(nodes)}개 노드, {len(topics)}개 스터디셋")
+        print(f"  ✅ 이미지: {len(media_map)}개 / TOC노드: {len(toc_ids)}개 / PDF: {len(pdf_files)}개")
         for tid, tinfo in topics.items():
             print(f"     스터디셋: {tinfo['title']}")
-        # 위계 구조 확인
         roots = [n for n in nodes if n['parent_id'] is None]
         print(f"  ✅ 루트 노드: {len(roots)}개")
         for r in roots:
@@ -231,6 +233,8 @@ def run(pkg_path: str = None, vault_path: str = None, overwrite: bool = True) ->
             topics=topics,
             vault_path=vault_path,
             media_map=media_map,
+            toc_ids=toc_ids,
+            pdf_files=pdf_files,
             overwrite=overwrite,
         )
     except Exception as e:

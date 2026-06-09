@@ -238,6 +238,50 @@ def build_hierarchy(nodes: list[dict]) -> dict:
     return node_map
 
 
+def get_toc_node_ids(db_path: str) -> set:
+    """
+    ZFORUMOWNER JSON에서 TOC(목차) 노드 ID 목록을 추출합니다.
+
+    TOC 노드 = PDF에 주입된 목차에서 온 마인드맵 카드
+    이 노드들은 자식이 없어도 반드시 폴더로 생성해야 합니다.
+    (1차 문제, 2차 연습서 문제 등을 나중에 그 안에 넣어야 하기 때문)
+
+    반환값: TOC 노드 UUID의 set
+    """
+    import json
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT ZFORUMOWNER FROM ZTOPIC WHERE ZFORUMOWNER IS NOT NULL")
+
+    toc_ids = set()
+    for row in cur.fetchall():
+        try:
+            data = json.loads(row[0])
+            for book_md5, group_info in data.get('bookGroupNotes', {}).items():
+                for nid in group_info.get('tocNoteIds', []):
+                    toc_ids.add(nid)
+        except Exception:
+            pass
+
+    conn.close()
+    return toc_ids
+
+
+def get_pdf_files(tmp_dir: str) -> list:
+    """
+    언패킹된 임시 폴더에서 PDF 파일 경로 목록을 반환합니다.
+    .marginpkg 안에 원본 PDF가 포함되어 있습니다.
+
+    반환값: PDF 파일 절대 경로 리스트
+    """
+    pdfs = []
+    for root, dirs, files in os.walk(tmp_dir):
+        for f in files:
+            if f.lower().endswith('.pdf'):
+                pdfs.append(os.path.join(root, f))
+    return pdfs
+
+
 def cleanup_temp(tmp_dir: str):
     """임시 언패킹 폴더를 삭제합니다."""
     try:
