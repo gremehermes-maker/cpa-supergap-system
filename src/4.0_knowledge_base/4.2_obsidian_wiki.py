@@ -275,33 +275,28 @@ def push_all_nodes(
     root_nodes = [n for n in nodes if n['parent_id'] is None]
     print(f"[Obsidian 푸시] 루트 노드: {len(root_nodes)}개")
 
-    # 마인드맵 노드(type=6)와 하이라이트(type=256)를 구분
-    # type=256/7이고 루트인 하이라이트는 그냥 루트 밑에 저장
+    skipped = 0
     for root in root_nodes:
         topic_id = root.get('topic_id', '')
         topic_info = topics.get(topic_id, {})
         topic_title = topic_info.get('title', 'Unknown_Topic')
 
-        # type=6 또는 title이 있는 루트 = 마인드맵 구조의 진짜 루트
-        # type=256/7이고 title이 없는 = 떠다니는 하이라이트 (특수 처리)
+        # 제목이 없고 하이라이트 타입인 루트 노드는
+        # 이미 위계 트리 안에 같은 내용이 포함되어 있으므로 스킵 (중복 방지)
         title = root['title']
         if not title and root['node_type'] in ('highlight', 'highlight_linked'):
-            # 떠다니는 하이라이트 → _highlights 폴더에 모음
-            hl_dir = mn_root / "_highlights"
-            hl_dir.mkdir(exist_ok=True)
-            push_node_recursive(
-                node=root, node_map=node_map,
-                parent_dir=hl_dir,
-                topic_title=topic_title, topic_id=topic_id,
-                media_map=media_map, depth=0, results=results,
-            )
-        else:
-            push_node_recursive(
-                node=root, node_map=node_map,
-                parent_dir=mn_root,
-                topic_title=topic_title, topic_id=topic_id,
-                media_map=media_map, depth=0, results=results,
-            )
+            skipped += 1
+            continue
+
+        push_node_recursive(
+            node=root, node_map=node_map,
+            parent_dir=mn_root,
+            topic_title=topic_title, topic_id=topic_id,
+            media_map=media_map, depth=0, results=results,
+        )
+
+    if skipped:
+        print(f"[Obsidian 푸시] 중복 하이라이트 스킵: {skipped}개 (위계 트리 내 이미 포함)")
 
     print(f"\n[Obsidian 푸시] 완료: 성공 {len(results['success'])}개 / 실패 {len(results['failed'])}개")
     return results
