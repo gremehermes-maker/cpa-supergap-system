@@ -1,23 +1,19 @@
 """
-2.1_mn_parser.py — MarginNote .marginpkg 패키지 파서
+2.1_mn_parser.py — MarginNote .marginpkg 패키지 파서 v2
 =====================================================
-.marginpkg 파일을 열어서 내부 SQLite(.marginnotes)를
-파싱하고, 노드 데이터를 Python 딕셔너리 리스트로 반환합니다.
+.marginpkg → SQLite 파싱 → 위계 트리 + 이미지 추출
 
-[핵심 테이블 구조 (실제 DB 분석 결과)]
-ZBOOKNOTE 테이블:
-  - ZNOTEID        : 고유 UUID (변하지 않음, 모든 시스템의 PK)
-  - ZNOTETITLE     : 노드 제목 (마인드맵에서 보이는 텍스트)
-  - ZNOTES_TEXT    : 노드 본문 텍스트
-  - ZGROUPNOTEID   : 부모 노드의 ZNOTEID (None이면 최상위)
-  - ZMINDLINKS     : 연결된 카드 UUID 목록 ('|'로 구분)
-  - ZHIGHLIGHT_STYLE: 색상 코드 (카드 포맷 타입 결정)
-  - ZTYPE          : 노드 타입 (6=마인드맵노드, 256=하이라이트)
-  - ZSTARTPAGE     : 원본 PDF의 시작 페이지
-  - ZENDPAGE       : 원본 PDF의 끝 페이지
-  - ZHIGHLIGHT_TEXT: PDF에서 하이라이트한 원본 텍스트
-  - ZMEDIA_LIST    : 첨부 미디어 UUID 목록
-  - ZTOPICID       : 소속 스터디셋(Topic) ID
+[핵심 발견 사항]
+- ZGROUPNOTEID: 이 패키지에선 항상 NULL (사용 안 됨)
+- ZMINDLINKS: 부모 → 자식들 방향으로 위계 인코딩 ('|' 구분 UUID 목록)
+- ZMEDIA.ZDATA: Apple NSKeyedArchiver(bplist) 안에 PNG 이미지 래핑
+- ZFORUMOWNER: TOC 순서를 가진 JSON (bookGroupNotes.tocNoteIds)
+
+[계층 재구성 알고리즘]
+  1. 모든 노드의 ZMINDLINKS를 읽음 (부모 → [자식들])
+  2. 역방향 매핑 생성 (자식 → 부모)
+  3. 부모가 없는 노드 = 루트
+  4. ZTOPIC.ZMINDLINKS에 스터디셋 루트 링크 있음
 """
 
 import os
@@ -26,45 +22,33 @@ import zipfile
 import tempfile
 import sqlite3
 import shutil
+import plistlib
 from pathlib import Path
-from datetime import datetime
 from typing import Optional
 
 # ============================================================
 # ZHIGHLIGHT_STYLE → 카드 포맷 타입 매핑표
-# (실제 DB에서 발견된 값들)
-# 추후 사용자가 정확한 매핑 확인 후 수정 가능
 # ============================================================
 HIGHLIGHT_STYLE_MAP = {
-    "mbooks-annotation1": "basic",          # 색상 1
-    "mbooks-annotation2": "basic",          # 색상 2
-    "mbooks-annotation3": "cloze",          # 색상 3 (빈칸)
-    "mbooks-annotation4": "cloze",          # 색상 4 (빈칸)
-    "mbooks-annotation5": "highlight",      # 색상 5 (형광펜)
-    "mbooks-annotation6": "basic",          # 색상 6
-    "mbooks-annotation7": "highlight",      # 색상 7 (형광펜)
-    None: "mindmap_node",                   # 색상 없음 = 마인드맵 노드
+    "mbooks-annotation1": "basic",
+    "mbooks-annotation2": "basic",
+    "mbooks-annotation3": "cloze",
+    "mbooks-annotation4": "cloze",
+    "mbooks-annotation5": "highlight",
+    "mbooks-annotation6": "basic",
+    "mbooks-annotation7": "highlight",
+    None: "mindmap_node",
 }
 
-# ============================================================
-# ZTYPE 값 설명
-# ============================================================
 NODE_TYPE_MAP = {
-    6: "mindmap_node",    # 마인드맵 카드 노드
-    256: "highlight",     # PDF 하이라이트 노드
+    6: "mindmap_node",
+    7: "highlight_linked",   # 스터디셋2에 연결된 하이라이트
+    256: "highlight",
 }
 
 
 def find_marginpkg(search_dir: str) -> Optional[str]:
-    """
-    지정된 폴더에서 .marginpkg 파일을 찾아 경로를 반환합니다.
-
-    매개변수:
-        search_dir: 탐색할 폴더 경로
-
-    반환값:
-        .marginpkg 파일 경로 (없으면 None)
-    """
+    """지정된 폴더에서 .marginpkg 파일을 찾아 경로를 반환합니다."""
     for f in os.listdir(search_dir):
         if f.endswith('.marginpkg'):
             return os.path.join(search_dir, f)
@@ -73,28 +57,27 @@ def find_marginpkg(search_dir: str) -> Optional[str]:
 
 def unpack_marginpkg(pkg_path: str) -> tuple[str, str]:
     """
-    .marginpkg 파일을 임시 폴더에 언패킹합니다.
+    .marginpkg(ZIP)를 임시 폴더에 언패킹합니다.
 
-    .marginpkg = ZIP 형식
-    내부: .marginnotes (SQLite DB) + PDF 등
-
-    매개변수:
-        pkg_path: .marginpkg 파일 전체 경로
-
-    반환값:
-        (임시_폴더_경로, SQLite_DB_파일_경로) 튜플
+    반환값: (임시_폴더_경로, SQLite_DB_경로) 튜플
     """
     tmp_dir = tempfile.mkdtemp(prefix='mn_unpack_')
-
     with zipfile.ZipFile(pkg_path, 'r') as z:
         z.extractall(tmp_dir)
 
-    # .marginnotes 파일 탐색
     db_file = None
     for f in os.listdir(tmp_dir):
         if f.endswith('.marginnotes'):
             db_file = os.path.join(tmp_dir, f)
             break
+
+    if not db_file:
+        # 서브폴더 탐색
+        for root, dirs, files in os.walk(tmp_dir):
+            for f in files:
+                if f.endswith('.marginnotes'):
+                    db_file = os.path.join(root, f)
+                    break
 
     if not db_file:
         raise FileNotFoundError(f".marginnotes 파일을 찾을 수 없습니다: {tmp_dir}")
@@ -104,84 +87,49 @@ def unpack_marginpkg(pkg_path: str) -> tuple[str, str]:
 
 def parse_all_nodes(db_path: str) -> list[dict]:
     """
-    SQLite DB에서 모든 ZBOOKNOTE 노드를 파싱하여
-    Python 딕셔너리 리스트로 반환합니다.
+    SQLite DB에서 모든 노드를 파싱하고,
+    ZMINDLINKS를 기반으로 parent_id(역방향)를 계산합니다.
 
-    각 딕셔너리(노드)가 가지는 키:
-        - note_id       : ZNOTEID (UUID)
-        - title         : ZNOTETITLE (제목)
-        - text          : ZNOTES_TEXT (본문)
-        - highlight_text: ZHIGHLIGHT_TEXT (PDF 하이라이트 원문)
-        - parent_id     : ZGROUPNOTEID (부모 노드 ID, None이면 최상위)
-        - linked_ids    : ZMINDLINKS 파싱 결과 (리스트)
-        - card_type     : ZHIGHLIGHT_STYLE 매핑 결과
-        - node_type     : ZTYPE 설명 문자열
-        - start_page    : ZSTARTPAGE
-        - end_page      : ZENDPAGE
-        - topic_id      : ZTOPICID (소속 스터디셋)
-        - media_ids     : ZMEDIA_LIST 파싱 결과 (리스트)
-        - raw_style     : ZHIGHLIGHT_STYLE 원본 값
-
-    매개변수:
-        db_path: .marginnotes SQLite 파일 경로
-
-    반환값:
-        노드 딕셔너리 리스트
+    반환값: 노드 딕셔너리 리스트 (parent_id 포함)
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    # 모든 노드 조회 (삭제된 노드 제외)
     cur.execute("""
-        SELECT
-            ZNOTEID,
-            ZNOTETITLE,
-            ZNOTES_TEXT,
-            ZHIGHLIGHT_TEXT,
-            ZGROUPNOTEID,
-            ZMINDLINKS,
-            ZHIGHLIGHT_STYLE,
-            ZTYPE,
-            ZSTARTPAGE,
-            ZENDPAGE,
-            ZTOPICID,
-            ZMEDIA_LIST,
-            ZHIGHLIGHT_DATE,
-            ZNOTE_DATE,
-            ZZINDEX
+        SELECT ZNOTEID, ZNOTETITLE, ZNOTES_TEXT, ZHIGHLIGHT_TEXT,
+               ZGROUPNOTEID, ZMINDLINKS, ZHIGHLIGHT_STYLE, ZTYPE,
+               ZSTARTPAGE, ZENDPAGE, ZTOPICID, ZMEDIA_LIST,
+               ZZINDEX
         FROM ZBOOKNOTE
         WHERE ZNOTEID IS NOT NULL
         ORDER BY ZZINDEX ASC
     """)
 
     rows = cur.fetchall()
-    nodes = []
 
+    # 1단계: 기본 노드 맵 구성
+    node_map = {}
     for row in rows:
-        # ZMINDLINKS: 'UUID1|UUID2|...' 형태를 리스트로 파싱
         raw_links = row['ZMINDLINKS'] or ''
-        linked_ids = [uid.strip() for uid in raw_links.split('|') if uid.strip()] if raw_links else []
+        child_ids = [l.strip() for l in raw_links.split('|') if l.strip()]
 
-        # ZMEDIA_LIST: 마찬가지로 '|' 구분
         raw_media = row['ZMEDIA_LIST'] or ''
-        media_ids = [m.strip() for m in raw_media.split('|') if m.strip()] if raw_media else []
+        media_ids = [m.strip() for m in raw_media.split('|') if m.strip()]
 
-        # ZHIGHLIGHT_STYLE → card_type 매핑
         raw_style = row['ZHIGHLIGHT_STYLE']
         card_type = HIGHLIGHT_STYLE_MAP.get(raw_style, 'basic')
-
-        # ZTYPE → node_type 설명
         ztype = row['ZTYPE'] or 0
         node_type = NODE_TYPE_MAP.get(ztype, f"unknown_{ztype}")
 
-        node = {
+        node_map[row['ZNOTEID']] = {
             "note_id":        row['ZNOTEID'],
             "title":          row['ZNOTETITLE'] or '',
             "text":           row['ZNOTES_TEXT'] or '',
             "highlight_text": row['ZHIGHLIGHT_TEXT'] or '',
-            "parent_id":      row['ZGROUPNOTEID'],  # None이면 최상위 루트
-            "linked_ids":     linked_ids,
+            "parent_id":      None,  # 아래에서 ZMINDLINKS 역추적으로 채움
+            "child_ids":      child_ids,
+            "linked_ids":     child_ids,  # 호환성 유지
             "card_type":      card_type,
             "node_type":      node_type,
             "start_page":     row['ZSTARTPAGE'],
@@ -191,34 +139,103 @@ def parse_all_nodes(db_path: str) -> list[dict]:
             "raw_style":      raw_style,
             "z_index":        row['ZZINDEX'],
         }
-        nodes.append(node)
+
+    # 2단계: ZMINDLINKS 역방향 매핑 → parent_id 계산
+    # 부모 노드가 ZMINDLINKS에 자식 UUID를 나열하므로,
+    # 각 자식에게 그 부모의 ID를 할당
+    for nid, node in node_map.items():
+        for cid in node['child_ids']:
+            if cid in node_map:
+                node_map[cid]['parent_id'] = nid
 
     conn.close()
-    return nodes
+    return list(node_map.values())
+
+
+def extract_media(db_path: str) -> dict:
+    """
+    ZMEDIA 테이블에서 bplist를 파싱하여 실제 이미지 데이터를 추출합니다.
+
+    반환값: {md5: {"data": bytes, "format": "PNG"/"JPEG", "ext": ".png"/".jpg"}}
+    """
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+
+    cur.execute("SELECT ZMD5, ZDATA FROM ZMEDIA")
+    media_map = {}
+
+    for row in cur.fetchall():
+        md5, blob = row
+        if md5 in media_map or not blob:
+            continue
+
+        try:
+            plist = plistlib.loads(blob)
+            objects = plist.get('$objects', [])
+
+            # NSKeyedArchiver의 $objects 배열에서 가장 큰 bytes 객체 = 이미지
+            img_data = None
+            for obj in objects:
+                if isinstance(obj, bytes) and len(obj) > 100:
+                    img_data = obj
+                    break
+
+            if img_data:
+                header = img_data[:4]
+                if header[:3] == b'\xff\xd8\xff':
+                    fmt, ext = "JPEG", ".jpg"
+                elif header[:4] == b'\x89PNG':
+                    fmt, ext = "PNG", ".png"
+                else:
+                    fmt, ext = "DATA", ".bin"
+
+                media_map[md5] = {"data": img_data, "format": fmt, "ext": ext}
+        except Exception:
+            pass
+
+    conn.close()
+    return media_map
 
 
 def get_topic_info(db_path: str) -> dict:
     """
-    ZTOPIC 테이블에서 스터디셋(Topic) 메타정보를 가져옵니다.
-    (스터디셋 제목, PDF MD5 등)
+    ZTOPIC 테이블에서 스터디셋 메타정보를 가져옵니다.
 
-    반환값:
-        {topic_id: {"title": ..., "pdf_md5": ...}, ...} 딕셔너리
+    반환값: {topic_id: {"title": ..., "pdf_md5": ..., "root_links": [...]}}
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    cur.execute("SELECT ZTOPICID, ZTITLE, ZLOCALBOOKMD5 FROM ZTOPIC")
+    cur.execute("SELECT ZTOPICID, ZTITLE, ZLOCALBOOKMD5, ZMINDLINKS FROM ZTOPIC")
     topics = {}
     for row in cur.fetchall():
+        raw_links = row['ZMINDLINKS'] or ''
+        root_links = [l.strip() for l in raw_links.split('|') if l.strip()]
         topics[row['ZTOPICID']] = {
-            "title":   row['ZTITLE'] or '',
-            "pdf_md5": row['ZLOCALBOOKMD5'] or '',
+            "title":      row['ZTITLE'] or '',
+            "pdf_md5":    row['ZLOCALBOOKMD5'] or '',
+            "root_links": root_links,
         }
 
     conn.close()
     return topics
+
+
+def build_hierarchy(nodes: list[dict]) -> dict:
+    """
+    평면 노드 리스트를 계층 트리로 재구성합니다.
+
+    반환값: {note_id: node_dict(children 키 포함)} 딕셔너리
+    """
+    node_map = {n['note_id']: {**n, 'children': []} for n in nodes}
+
+    for nid, node in node_map.items():
+        for cid in node['child_ids']:
+            if cid in node_map:
+                node_map[nid]['children'].append(node_map[cid])
+
+    return node_map
 
 
 def cleanup_temp(tmp_dir: str):
@@ -235,7 +252,6 @@ def cleanup_temp(tmp_dir: str):
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-    # G 드라이브에서 .marginpkg 탐색
     base = 'G:\\'
     items = os.listdir(base)
     inner_drive = os.path.join(base, items[0])
@@ -253,29 +269,20 @@ if __name__ == "__main__":
         print("ERROR: .marginpkg 파일을 찾을 수 없습니다.")
         sys.exit(1)
 
-    print(f"[파서] 패키지 경로: {pkg_path}")
-
-    # 언패킹
+    print(f"[파서] 패키지: {pkg_path}")
     tmp_dir, db_path = unpack_marginpkg(pkg_path)
-    print(f"[파서] DB 경로: {db_path}")
 
-    # 노드 파싱
     nodes = parse_all_nodes(db_path)
     topics = get_topic_info(db_path)
+    media = extract_media(db_path)
 
-    print(f"\n[파서] 총 {len(nodes)}개 노드 파싱 완료")
+    print(f"[파서] 노드: {len(nodes)}개, 미디어: {len(media)}개")
     print(f"[파서] 스터디셋: {topics}")
 
-    # 샘플 출력
-    print("\n=== 노드 샘플 (처음 5개) ===")
-    for i, node in enumerate(nodes[:5]):
-        print(f"\n  [{i+1}] {node['title'] or '(제목없음)'}")
-        print(f"       ID: {node['note_id']}")
-        print(f"       타입: {node['node_type']} / 카드: {node['card_type']}")
-        print(f"       부모: {node['parent_id']}")
-        print(f"       링크: {node['linked_ids']}")
-        print(f"       텍스트: {node['text'][:50]}")
+    # 위계 확인
+    roots = [n for n in nodes if n['parent_id'] is None]
+    print(f"[파서] 루트 노드: {len(roots)}개")
+    for r in roots:
+        print(f"  - {r['title'] or '(제목없음)'} (children={len(r['child_ids'])})")
 
-    # 정리
     cleanup_temp(tmp_dir)
-    print(f"\n[파서] 임시 파일 정리 완료")

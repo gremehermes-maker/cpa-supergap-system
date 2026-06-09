@@ -203,26 +203,34 @@ def run(pkg_path: str = None, vault_path: str = None, overwrite: bool = True) ->
         print(f"  ❌ 언패킹 실패: {e}")
         return {"error": str(e)}
 
-    # ── 4단계: SQLite 파싱 ────────────────────────
+    # ── 4단계: SQLite 파싱 + 이미지 추출 ──────────
     print("\n[4단계] MarginNote 데이터 파싱 중...")
     try:
         nodes = mn_parser.parse_all_nodes(db_path)
         topics = mn_parser.get_topic_info(db_path)
-        print(f"  ✅ 파싱 완료: {len(nodes)}개 노드, {len(topics)}개 스터디셋")
+        media_map = mn_parser.extract_media(db_path)
+        print(f"  ✅ 파싱 완료: {len(nodes)}개 노드, {len(topics)}개 스터디셋, {len(media_map)}개 이미지")
         for tid, tinfo in topics.items():
             print(f"     스터디셋: {tinfo['title']}")
+        # 위계 구조 확인
+        roots = [n for n in nodes if n['parent_id'] is None]
+        print(f"  ✅ 루트 노드: {len(roots)}개")
+        for r in roots:
+            if r['title']:
+                print(f"     루트: {r['title']}")
     except Exception as e:
         mn_parser.cleanup_temp(tmp_dir)
         print(f"  ❌ 파싱 실패: {e}")
         return {"error": str(e)}
 
     # ── 5단계: Obsidian 볼트로 푸시 ──────────────
-    print("\n[5단계] Obsidian 볼트로 .md 파일 생성 중...")
+    print("\n[5단계] Obsidian 볼트로 위계 폴더/파일 생성 중...")
     try:
         push_result = obsidian_wiki.push_all_nodes(
             nodes=nodes,
             topics=topics,
             vault_path=vault_path,
+            media_map=media_map,
             overwrite=overwrite,
         )
     except Exception as e:
